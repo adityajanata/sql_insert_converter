@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SQL INSERT Converter Tool</title>
+    <title>SQL Converter Tool (v4 - Advanced Split)</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/vue/3.3.4/vue.global.min.js"></script>
 
@@ -17,7 +17,6 @@
         ::-webkit-scrollbar-thumb { background: #888; border-radius: 4px; }
         ::-webkit-scrollbar-thumb:hover { background: #555; }
         
-        /* Ini trik biar codingan {{ }} gak keliatan pas lagi loading */
         [v-cloak] { display: none !important; }
     </style>
 </head>
@@ -37,7 +36,7 @@
                 v-model="inputSql" 
                 @input="debouncedParse"
                 class="w-full flex-1 p-4 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-400 focus:outline-none font-mono text-xs resize-none transition-all whitespace-pre"
-                placeholder="Paste query INSERT SQL disini..."></textarea>
+                placeholder="Paste query INSERT SQL lo disini..."></textarea>
             
             <div class="mt-4 flex justify-between items-center">
                 <div class="flex items-center gap-2">
@@ -56,10 +55,21 @@
 
         <div class="w-full md:w-1/2 p-6 bg-gray-50/50 flex flex-col">
             
-            <div class="mb-6">
+            <div class="mb-4">
                 <h2 class="text-xl font-bold text-gray-800 mb-2 flex items-center gap-2">
                     <span>⚙️</span> Filter Columns
                 </h2>
+                
+                <div class="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                    <label class="cursor-pointer flex items-center gap-2 select-none">
+                        <input type="checkbox" v-model="splitQueryByValue" 
+                               class="w-4 h-4 text-blue-500 rounded focus:ring-blue-400 border-blue-300">
+                        <span class="text-sm font-bold text-blue-700">Split Query by Unique Value</span>
+                    </label>
+                    <p class="text-xs text-blue-600 ml-6 mt-1">
+                        Jika dicentang, akan membagi SELECT berdasarkan nilai unik kolom pertama yang dipilih.
+                    </p>
+                </div>
                 
                 <div v-if="columns.length > 0" 
                      class="max-h-[150px] overflow-y-auto pr-2"
@@ -73,7 +83,7 @@
                 </div>
                 
                 <div v-else class="text-center py-8 text-gray-400 text-sm border-2 border-dashed border-gray-200 rounded-xl bg-gray-50">
-                    <p>Paste query nya dulu disamping 😉</p>
+                    <p>Paste query dulu cuy</p>
                 </div>
             </div>
 
@@ -89,7 +99,7 @@
                         placeholder="Hasil query bakal muncul disini..."></textarea>
                     
                     <button v-if="generatedQuery" @click="copyToClipboard" 
-                            class="absolute bottom-2 right-2 bg-blue-600 hover:bg-blue-500 text-white text-xs px-3 py-1 rounded-md shadow transition-colors">
+                            class="absolute bottom-4 left-1/2 -translate-x-1/2 bg-blue-600 hover:bg-blue-500 text-white text-xs px-3 py-1 rounded-md shadow transition-colors">
                         {{ copyText }}
                     </button>
                 </div>
@@ -103,48 +113,105 @@
         createApp({
             data() {
                 return {
-                    inputSql: `INSERT INTO DB.schema.TABLE1 (ID, NAME, VALUE, LAST_UPDATE) VALUES(N'12341', N'Melissa', N'90', '2022-09-20 13:33:20.750');\nINSERT INTO DB.schema.TABLE1 (ID, NAME, VALUE, LAST_UPDATE) VALUES(N'12342', N'Agus', N'80', '2021-09-20 13:33:20.750');\nINSERT INTO DB.schema.TABLE1 (ID, NAME, VALUE, LAST_UPDATE) VALUES(N'12343', N'Rissa', N'95', '2023-09-20 13:33:20.750');`,
+                    // Contoh input dengan duplikat ID
+                    inputSql: `INSERT INTO DB.schema.TABLE1 (ID, NAME, VALUE, LAST_UPDATE) VALUES(N'12341', N'Melissa', N'90', '2022-09-20 13:33:20.750');\nINSERT INTO DB.schema.TABLE1 (ID, NAME, VALUE, LAST_UPDATE) VALUES(N'12342', N'Agus', N'80', '2021-09-20 13:33:20.750');\nINSERT INTO DB.schema.TABLE1 (ID, NAME, VALUE, LAST_UPDATE) VALUES(N'12343', N'Rissa', N'95', '2023-09-20 13:33:20.750');\nINSERT INTO DB.schema.TABLE1 (ID, NAME, VALUE, LAST_UPDATE) VALUES(N'12343', N'John', N'25', '2023-09-20 13:33:20.750');`, 
                     tableName: '',
                     columns: [],
                     parsedRows: [], 
                     selectedCols: [],
-                    copyText: 'Copy',
+                    splitQueryByValue: false, 
+                    copyText: 'Copy Query',
                     debounceTimer: null
                 }
             },
             mounted() {
-                // Parse langsung pas pertama kali buka
                 this.parseSql();
-                console.log("App mounted cuy!");
             },
             computed: {
                 generatedQuery() {
                     if (!this.tableName || this.selectedCols.length === 0 || this.parsedRows.length === 0) {
                         return '';
                     }
-
-                    let sql = `SELECT * FROM ${this.tableName} WITH (NOLOCK) WHERE `;
                     
-                    const conditions = this.selectedCols.map(col => {
-                        const rawValues = this.parsedRows.map(row => row[col]).filter(v => v !== undefined);
-                        const uniqueValues = [...new Set(rawValues)]; 
+                    const baseQueryTemplate = `SELECT * FROM ${this.tableName} WITH (NOLOCK) WHERE `; 
+                    const primarySplitCol = this.selectedCols[0];
+                    const otherSelectedCols = this.selectedCols.slice(1); // Kolom selain yang pertama
 
-                        const cleanValues = uniqueValues.map(val => {
-                            let v = val.trim();
-                            const match = v.match(/N?'(.*)'/);
-                            if (match) {
-                                return `'${match[1]}'`; 
+                    if (this.splitQueryByValue) {
+                        // --- LOGIC SPLIT QUERY (Multiple SELECT + AND) ---
+                        
+                        let queryGroups = {}; // { '12343': { ID: ['12343'], NAME: ['Rissa', 'John'] }, ... }
+
+                        // 1. Kelompokkan Data berdasarkan nilai Kolom Pertama (Primary Split Column)
+                        this.parsedRows.forEach(row => {
+                            const splitValue = row[primarySplitCol];
+                            if (!queryGroups[splitValue]) {
+                                // Inisialisasi kelompok baru
+                                queryGroups[splitValue] = {
+                                    [primarySplitCol]: [splitValue] // Nilai kolom split selalu cuma 1
+                                };
+                                otherSelectedCols.forEach(col => {
+                                    queryGroups[splitValue][col] = []; // Inisialisasi array untuk kolom lain
+                                });
                             }
-                            return v; 
+
+                            // Kumpulkan nilai kolom lain yang dipilih
+                            otherSelectedCols.forEach(col => {
+                                if (row[col] && !queryGroups[splitValue][col].includes(row[col])) {
+                                    queryGroups[splitValue][col].push(row[col]);
+                                }
+                            });
+                        });
+                        
+                        let allQueries = [];
+                        
+                        // 2. Iterasi Kelompok untuk membuat Query
+                        for (const splitValue in queryGroups) {
+                            const group = queryGroups[splitValue];
+                            let conditions = [];
+
+                            // Kondisi 1: Primary Split Column (selalu 1 nilai)
+                            const cleanedSplitValue = this.cleanSqlValue(splitValue);
+                            conditions.push(`${primarySplitCol} IN (${cleanedSplitValue})`);
+
+                            // Kondisi 2: Kolom Tambahan (Bisa multiple nilai)
+                            otherSelectedCols.forEach(col => {
+                                if (group[col] && group[col].length > 0) {
+                                    const cleanValues = group[col].map(this.cleanSqlValue);
+                                    conditions.push(`${col} IN (${cleanValues.join(',')})`);
+                                }
+                            });
+                            
+                            allQueries.push(baseQueryTemplate + conditions.join(' AND '));
+                        }
+                        
+                        return allQueries.join('\n'); 
+
+                    } else {
+                        // --- LOGIC GABUNG QUERY (Single SELECT - Sama seperti sebelumnya) ---
+                        
+                        const conditions = this.selectedCols.map(col => {
+                            const rawValues = this.parsedRows.map(row => row[col]).filter(v => v !== undefined);
+                            const uniqueValues = [...new Set(rawValues)]; 
+                            
+                            const cleanValues = uniqueValues.map(this.cleanSqlValue);
+
+                            return `${col} IN (${cleanValues.join(',')})`;
                         });
 
-                        return `${col} IN (${cleanValues.join(',')})`;
-                    });
-
-                    return sql + conditions.join(' AND ');
+                        return baseQueryTemplate + conditions.join(' AND ');
+                    }
                 }
             },
             methods: {
+                cleanSqlValue(rawValue) {
+                    let v = rawValue.trim();
+                    const match = v.match(/N?'(.*)'/);
+                    if (match) {
+                        return `'${match[1].replace(/'/g, "''")}'`; 
+                    }
+                    return v; 
+                },
                 debouncedParse() {
                     clearTimeout(this.debounceTimer);
                     this.debounceTimer = setTimeout(() => {
@@ -202,15 +269,16 @@
                     this.parsedRows = [];
                     this.selectedCols = [];
                     this.tableName = '';
+                    this.splitQueryByValue = false;
                 },
                 copyToClipboard() {
                     navigator.clipboard.writeText(this.generatedQuery).then(() => {
                         this.copyText = 'Copied!';
-                        setTimeout(() => this.copyText = 'Copy', 2000);
+                        setTimeout(() => this.copyText = 'Copy Query', 2000);
                     });
                 }
             }
-        }).mount('#app'); // Mount di akhir biar aman
+        }).mount('#app');
     </script>
 </body>
 </html>
