@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SQL INSERT Converter Tool</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/vue/3.3.4/vue.global.min.js"></script>
+
+    <style>
+        body {
+            background: linear-gradient(135deg, #a7cdf8, #5aa2e8 60%, #6bbff4);
+            min-height: 100vh;
+        }
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: #f1f1f1; }
+        ::-webkit-scrollbar-thumb { background: #888; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #555; }
+        
+        /* Ini trik biar codingan {{ }} gak keliatan pas lagi loading */
+        [v-cloak] { display: none !important; }
+    </style>
+</head>
+<body class="flex items-center justify-center p-4 font-sans text-gray-700">
+
+    <div id="app" v-cloak class="w-full max-w-4xl bg-white/95 backdrop-blur-sm rounded-2xl shadow-2xl overflow-hidden flex flex-col md:flex-row min-h-[600px]">
+        
+        <div class="w-full md:w-1/2 p-6 border-r border-gray-100 flex flex-col">
+            <div class="mb-4">
+                <h2 class="text-xl font-bold text-gray-800 flex items-center gap-2">
+                    <span>📥</span> Input Query
+                </h2>
+                <p class="text-xs text-gray-400">Contoh: INSERT INTO ... VALUES(...)</p>
+            </div>
+            
+            <textarea 
+                v-model="inputSql" 
+                @input="debouncedParse"
+                class="w-full flex-1 p-4 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-400 focus:outline-none font-mono text-xs resize-none transition-all whitespace-pre"
+                placeholder="Paste query INSERT SQL disini..."></textarea>
+            
+            <div class="mt-4 flex justify-between items-center">
+                <div class="flex items-center gap-2">
+                    <span v-if="parsedRows.length > 0" class="text-xs font-bold text-green-600 bg-green-100 px-3 py-1 rounded-full">
+                        ✅ {{ parsedRows.length }} Data Detected
+                    </span>
+                    <span v-else class="text-xs font-bold text-red-500 bg-red-100 px-3 py-1 rounded-full">
+                        ❌ No Data
+                    </span>
+                </div>
+                <button @click="clearAll" class="text-xs text-gray-400 hover:text-red-500 font-medium transition-colors">
+                    Reset
+                </button>
+            </div>
+        </div>
+
+        <div class="w-full md:w-1/2 p-6 bg-gray-50/50 flex flex-col">
+            
+            <div class="mb-6">
+                <h2 class="text-xl font-bold text-gray-800 mb-2 flex items-center gap-2">
+                    <span>⚙️</span> Filter Columns
+                </h2>
+                
+                <div v-if="columns.length > 0" 
+                     class="max-h-[150px] overflow-y-auto pr-2"
+                     :class="['grid gap-2', columns.length >= 6 ? 'grid-cols-1' : 'grid-cols-2']">
+                    <label v-for="col in columns" :key="col" 
+                           class="cursor-pointer group flex items-center gap-2 p-2 bg-white border border-gray-200 rounded-lg hover:border-blue-400 transition-all select-none shadow-sm">
+                        <input type="checkbox" :value="col" v-model="selectedCols" 
+                               class="w-4 h-4 text-blue-500 rounded focus:ring-blue-400 border-gray-300">
+                        <span class="text-xs font-bold text-gray-600 group-hover:text-blue-600 break-all">{{ col }}</span>
+                    </label>
+                </div>
+                
+                <div v-else class="text-center py-8 text-gray-400 text-sm border-2 border-dashed border-gray-200 rounded-xl bg-gray-50">
+                    <p>Paste query nya dulu disamping 😉</p>
+                </div>
+            </div>
+
+            <div class="flex-1 flex flex-col">
+                <h2 class="text-xl font-bold text-gray-800 mb-2 flex items-center gap-2">
+                    <span>📤</span> Output SELECT
+                </h2>
+                <div class="relative flex-1">
+                    <textarea 
+                        readonly 
+                        :value="generatedQuery"
+                        class="w-full h-full p-4 bg-gray-800 text-green-400 border border-gray-700 rounded-xl focus:outline-none font-mono text-xs resize-none shadow-inner"
+                        placeholder="Hasil query bakal muncul disini..."></textarea>
+                    
+                    <button v-if="generatedQuery" @click="copyToClipboard" 
+                            class="absolute top-2 right-2 bg-blue-600 hover:bg-blue-500 text-white text-xs px-3 py-1 rounded-md shadow transition-colors">
+                        {{ copyText }}
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const { createApp } = Vue;
+
+        createApp({
+            data() {
+                return {
+                    inputSql: `INSERT INTO DB.schema.TABLE1 (ID, NAME, VALUE, LAST_UPDATE) VALUES(N'12341', N'Melissa', N'90', '2022-09-20 13:33:20.750');\nINSERT INTO DB.schema.TABLE1 (ID, NAME, VALUE, LAST_UPDATE) VALUES(N'12342', N'Agus', N'80', '2021-09-20 13:33:20.750');\nINSERT INTO DB.schema.TABLE1 (ID, NAME, VALUE, LAST_UPDATE) VALUES(N'12343', N'Rissa', N'95', '2023-09-20 13:33:20.750');`,
+                    tableName: '',
+                    columns: [],
+                    parsedRows: [], 
+                    selectedCols: [],
+                    copyText: 'Copy',
+                    debounceTimer: null
+                }
+            },
+            mounted() {
+                // Parse langsung pas pertama kali buka
+                this.parseSql();
+                console.log("App mounted cuy!");
+            },
+            computed: {
+                generatedQuery() {
+                    if (!this.tableName || this.selectedCols.length === 0 || this.parsedRows.length === 0) {
+                        return '';
+                    }
+
+                    let sql = `SELECT * FROM ${this.tableName} WITH (NOLOCK) WHERE `;
+                    
+                    const conditions = this.selectedCols.map(col => {
+                        const rawValues = this.parsedRows.map(row => row[col]).filter(v => v !== undefined);
+                        const uniqueValues = [...new Set(rawValues)]; 
+
+                        const cleanValues = uniqueValues.map(val => {
+                            let v = val.trim();
+                            const match = v.match(/N?'(.*)'/);
+                            if (match) {
+                                return `'${match[1]}'`; 
+                            }
+                            return v; 
+                        });
+
+                        return `${col} IN (${cleanValues.join(',')})`;
+                    });
+
+                    return sql + conditions.join(' AND ');
+                }
+            },
+            methods: {
+                debouncedParse() {
+                    clearTimeout(this.debounceTimer);
+                    this.debounceTimer = setTimeout(() => {
+                        this.parseSql();
+                    }, 300);
+                },
+                parseSql() {
+                    const lines = this.inputSql.split('\n').filter(line => line.trim() !== '');
+                    if (lines.length === 0) {
+                        this.columns = []; this.parsedRows = [];
+                        return;
+                    }
+
+                    const structMatch = lines[0].match(/INSERT\s+INTO\s+(.+?)\s*\((.+?)\)\s*VALUES/i);
+                    
+                    if (structMatch) {
+                        this.tableName = structMatch[1].trim();
+                        this.columns = structMatch[2].split(',').map(c => c.trim());
+                    } else {
+                        return; 
+                    }
+
+                    const newRows = [];
+                    lines.forEach(line => {
+                        const valIdx = line.toUpperCase().indexOf('VALUES');
+                        if (valIdx === -1) return;
+
+                        let valStr = line.substring(valIdx); 
+                        const startParen = valStr.indexOf('(');
+                        const endParen = valStr.lastIndexOf(')');
+                        
+                        if (startParen === -1 || endParen === -1) return;
+
+                        const content = valStr.substring(startParen + 1, endParen);
+                        const matches = content.match(/(N?'[^']*'|'[^']*'|[^,\s]+)/g);
+
+                        if (matches && matches.length === this.columns.length) {
+                            let rowObj = {};
+                            this.columns.forEach((col, i) => {
+                                rowObj[col] = matches[i];
+                            });
+                            newRows.push(rowObj);
+                        }
+                    });
+
+                    this.parsedRows = newRows;
+                    
+                    if (!this.selectedCols.every(c => this.columns.includes(c))) {
+                        this.selectedCols = [];
+                    }
+                },
+                clearAll() {
+                    this.inputSql = '';
+                    this.columns = [];
+                    this.parsedRows = [];
+                    this.selectedCols = [];
+                    this.tableName = '';
+                },
+                copyToClipboard() {
+                    navigator.clipboard.writeText(this.generatedQuery).then(() => {
+                        this.copyText = 'Copied!';
+                        setTimeout(() => this.copyText = 'Copy', 2000);
+                    });
+                }
+            }
+        }).mount('#app'); // Mount di akhir biar aman
+    </script>
+</body>
+</html>
