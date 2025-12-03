@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SQL Converter Tool (v4 - Advanced Split)</title>
+    <title>SQL Converter Tool</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/vue/3.3.4/vue.global.min.js"></script>
 
@@ -29,19 +29,19 @@
                 <h2 class="text-xl font-bold text-gray-800 flex items-center gap-2">
                     <span>📥</span> Input Query
                 </h2>
-                <p class="text-xs text-gray-400">Contoh: INSERT INTO ... VALUES(...)</p>
+                <p class="text-xs text-gray-400">Contoh: INSERT INTO ... VALUES(...) atau UPDATE ... WHERE ...</p>
             </div>
             
             <textarea 
                 v-model="inputSql" 
                 @input="debouncedParse"
                 class="w-full flex-1 p-4 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-400 focus:outline-none font-mono text-xs resize-none transition-all whitespace-pre"
-                placeholder="Paste query INSERT SQL lo disini..."></textarea>
+                placeholder="Paste query SQL lo disini..."></textarea>
             
             <div class="mt-4 flex justify-between items-center">
                 <div class="flex items-center gap-2">
                     <span v-if="parsedRows.length > 0" class="text-xs font-bold text-green-600 bg-green-100 px-3 py-1 rounded-full">
-                        ✅ {{ parsedRows.length }} Data Detected
+                        ✅ {{ parsedRows.length }} Data Detected (Type: {{ inputType }})
                     </span>
                     <span v-else class="text-xs font-bold text-red-500 bg-red-100 px-3 py-1 rounded-full">
                         ❌ No Data
@@ -60,7 +60,7 @@
                     <span>⚙️</span> Filter Columns
                 </h2>
                 
-                <div class="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                <div v-if="inputType === 'INSERT'" class="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
                     <label class="cursor-pointer flex items-center gap-2 select-none">
                         <input type="checkbox" v-model="splitQueryByValue" 
                                class="w-4 h-4 text-blue-500 rounded focus:ring-blue-400 border-blue-300">
@@ -113,15 +113,16 @@
         createApp({
             data() {
                 return {
-                    // Contoh input dengan duplikat ID
-                    inputSql: `INSERT INTO DB.schema.TABLE1 (ID, NAME, VALUE, LAST_UPDATE) VALUES(N'12341', N'Melissa', N'90', '2022-09-20 13:33:20.750');\nINSERT INTO DB.schema.TABLE1 (ID, NAME, VALUE, LAST_UPDATE) VALUES(N'12342', N'Agus', N'80', '2021-09-20 13:33:20.750');\nINSERT INTO DB.schema.TABLE1 (ID, NAME, VALUE, LAST_UPDATE) VALUES(N'12343', N'Rissa', N'95', '2023-09-20 13:33:20.750');\nINSERT INTO DB.schema.TABLE1 (ID, NAME, VALUE, LAST_UPDATE) VALUES(N'12343', N'John', N'25', '2023-09-20 13:33:20.750');`, 
+                    // Contoh input yang mencakup N'...' dan '...'
+                    inputSql: `UPDATE DB.schema.TABLE1 SET NAME = N'Clarissa' WHERE ID = '12341' AND LAST_UPDATE = '2022-09-20 13:33:20.750';\nUPDATE DB.schema.TABLE1 SET NAME = N'John' WHERE ID = N'12342' AND VALUE = '90';`,
                     tableName: '',
-                    columns: [],
+                    columns: [], 
                     parsedRows: [], 
                     selectedCols: [],
                     splitQueryByValue: false, 
-                    copyText: 'Copy Query',
-                    debounceTimer: null
+                    copyText: 'Copy',
+                    debounceTimer: null,
+                    inputType: 'NONE' 
                 }
             },
             mounted() {
@@ -134,61 +135,9 @@
                     }
                     
                     const baseQueryTemplate = `SELECT * FROM ${this.tableName} WITH (NOLOCK) WHERE `; 
-                    const primarySplitCol = this.selectedCols[0];
-                    const otherSelectedCols = this.selectedCols.slice(1); // Kolom selain yang pertama
-
-                    if (this.splitQueryByValue) {
-                        // --- LOGIC SPLIT QUERY (Multiple SELECT + AND) ---
-                        
-                        let queryGroups = {}; // { '12343': { ID: ['12343'], NAME: ['Rissa', 'John'] }, ... }
-
-                        // 1. Kelompokkan Data berdasarkan nilai Kolom Pertama (Primary Split Column)
-                        this.parsedRows.forEach(row => {
-                            const splitValue = row[primarySplitCol];
-                            if (!queryGroups[splitValue]) {
-                                // Inisialisasi kelompok baru
-                                queryGroups[splitValue] = {
-                                    [primarySplitCol]: [splitValue] // Nilai kolom split selalu cuma 1
-                                };
-                                otherSelectedCols.forEach(col => {
-                                    queryGroups[splitValue][col] = []; // Inisialisasi array untuk kolom lain
-                                });
-                            }
-
-                            // Kumpulkan nilai kolom lain yang dipilih
-                            otherSelectedCols.forEach(col => {
-                                if (row[col] && !queryGroups[splitValue][col].includes(row[col])) {
-                                    queryGroups[splitValue][col].push(row[col]);
-                                }
-                            });
-                        });
-                        
-                        let allQueries = [];
-                        
-                        // 2. Iterasi Kelompok untuk membuat Query
-                        for (const splitValue in queryGroups) {
-                            const group = queryGroups[splitValue];
-                            let conditions = [];
-
-                            // Kondisi 1: Primary Split Column (selalu 1 nilai)
-                            const cleanedSplitValue = this.cleanSqlValue(splitValue);
-                            conditions.push(`${primarySplitCol} IN (${cleanedSplitValue})`);
-
-                            // Kondisi 2: Kolom Tambahan (Bisa multiple nilai)
-                            otherSelectedCols.forEach(col => {
-                                if (group[col] && group[col].length > 0) {
-                                    const cleanValues = group[col].map(this.cleanSqlValue);
-                                    conditions.push(`${col} IN (${cleanValues.join(',')})`);
-                                }
-                            });
-                            
-                            allQueries.push(baseQueryTemplate + conditions.join(' AND '));
-                        }
-                        
-                        return allQueries.join('\n'); 
-
-                    } else {
-                        // --- LOGIC GABUNG QUERY (Single SELECT - Sama seperti sebelumnya) ---
+                    
+                    if (this.inputType === 'UPDATE') {
+                        // --- LOGIC UNTUK UPDATE (Mode Single Query) ---
                         
                         const conditions = this.selectedCols.map(col => {
                             const rawValues = this.parsedRows.map(row => row[col]).filter(v => v !== undefined);
@@ -200,14 +149,77 @@
                         });
 
                         return baseQueryTemplate + conditions.join(' AND ');
+
+                    } else if (this.inputType === 'INSERT') {
+                        // --- LOGIC UNTUK INSERT (Split atau Gabung) ---
+                        
+                        const primarySplitCol = this.selectedCols[0];
+                        const otherSelectedCols = this.selectedCols.slice(1); 
+
+                        if (this.splitQueryByValue) {
+                            let queryGroups = {}; 
+
+                            this.parsedRows.forEach(row => {
+                                const splitValue = row[primarySplitCol];
+                                if (!queryGroups[splitValue]) {
+                                    queryGroups[splitValue] = { [primarySplitCol]: [splitValue] };
+                                    otherSelectedCols.forEach(col => {
+                                        queryGroups[splitValue][col] = [];
+                                    });
+                                }
+
+                                otherSelectedCols.forEach(col => {
+                                    if (row[col] && !queryGroups[splitValue][col].includes(row[col])) {
+                                        queryGroups[splitValue][col].push(row[col]);
+                                    }
+                                });
+                            });
+                            
+                            let allQueries = [];
+                            
+                            for (const splitValue in queryGroups) {
+                                const group = queryGroups[splitValue];
+                                let conditions = [];
+
+                                const cleanedSplitValue = this.cleanSqlValue(splitValue);
+                                conditions.push(`${primarySplitCol} IN (${cleanedSplitValue})`);
+
+                                otherSelectedCols.forEach(col => {
+                                    if (group[col] && group[col].length > 0) {
+                                        const cleanValues = group[col].map(this.cleanSqlValue);
+                                        conditions.push(`${col} IN (${cleanValues.join(',')})`);
+                                    }
+                                });
+                                
+                                allQueries.push(baseQueryTemplate + conditions.join(' AND '));
+                            }
+                            
+                            return allQueries.join('\n'); 
+
+                        } else {
+                            // Gabung Mode
+                            const conditions = this.selectedCols.map(col => {
+                                const rawValues = this.parsedRows.map(row => row[col]).filter(v => v !== undefined);
+                                const uniqueValues = [...new Set(rawValues)]; 
+                                
+                                const cleanValues = uniqueValues.map(this.cleanSqlValue);
+
+                                return `${col} IN (${cleanValues.join(',')})`;
+                            });
+
+                            return baseQueryTemplate + conditions.join(' AND ');
+                        }
                     }
+                    return ''; 
                 }
             },
             methods: {
                 cleanSqlValue(rawValue) {
                     let v = rawValue.trim();
+                    // Regex ini nangkep isi di dalem quote: N'Isi' atau 'Isi'
                     const match = v.match(/N?'(.*)'/);
                     if (match) {
+                        // Balikin jadi 'Isi' (tanpa N)
                         return `'${match[1].replace(/'/g, "''")}'`; 
                     }
                     return v; 
@@ -219,21 +231,33 @@
                     }, 300);
                 },
                 parseSql() {
+                    this.resetParseState();
                     const lines = this.inputSql.split('\n').filter(line => line.trim() !== '');
-                    if (lines.length === 0) {
-                        this.columns = []; this.parsedRows = [];
-                        return;
-                    }
+                    if (lines.length === 0) return;
 
+                    const firstLine = lines[0].toUpperCase().trim();
+
+                    if (firstLine.startsWith('INSERT INTO')) {
+                        this.inputType = 'INSERT';
+                        this.parseInsert(lines);
+                    } else if (firstLine.startsWith('UPDATE')) {
+                        this.inputType = 'UPDATE';
+                        this.parseUpdate(lines);
+                    }
+                    
+                    if (!this.selectedCols.every(c => this.columns.includes(c))) {
+                        this.selectedCols = [];
+                    }
+                },
+                
+                parseInsert(lines) {
                     const structMatch = lines[0].match(/INSERT\s+INTO\s+(.+?)\s*\((.+?)\)\s*VALUES/i);
                     
-                    if (structMatch) {
-                        this.tableName = structMatch[1].trim();
-                        this.columns = structMatch[2].split(',').map(c => c.trim());
-                    } else {
-                        return; 
-                    }
+                    if (!structMatch) return;
 
+                    this.tableName = structMatch[1].trim();
+                    this.columns = structMatch[2].split(',').map(c => c.trim());
+                    
                     const newRows = [];
                     lines.forEach(line => {
                         const valIdx = line.toUpperCase().indexOf('VALUES');
@@ -258,11 +282,58 @@
                     });
 
                     this.parsedRows = newRows;
-                    
-                    if (!this.selectedCols.every(c => this.columns.includes(c))) {
-                        this.selectedCols = [];
-                    }
                 },
+
+                parseUpdate(lines) {
+                    // Regex untuk ambil Tabel dan Klausa WHERE
+                    const tableRegex = /UPDATE\s+(.+?)\s+SET.*?\s+WHERE\s+(.*)/is;
+                    
+                    // Regex yang diperbaiki untuk mencari kondisi [Kolom] = [Nilai]
+                    // Nilai bisa berupa: Angka/Kata (non-spasi), atau string yang dikurung kutip (bisa ada N)
+                    // ([\w\.]+): Nama Kolom
+                    // \s*=\s*: Tanda sama dengan dengan spasi
+                    // (N?'[^']*?'|\S+): Nilai. N?': Optional N, diikuti kutip, lalu non-kutip ('[^']*?'), lalu kutip. OR (\S+): non-spasi (untuk angka/NULL)
+                    const conditionRegex = /([\w\.]+)\s*=\s*(N?'[^']*?'|\S+)/gi;
+
+                    this.parsedRows = [];
+                    let detectedColumns = [];
+
+                    lines.forEach(line => {
+                         const lineMatch = line.match(tableRegex);
+                         if (lineMatch) {
+                            this.tableName = lineMatch[1].trim();
+                            const lineWhereClause = lineMatch[2].trim().replace(/;$/, '');
+                            let lineRowObj = {};
+                            let lineTempMatch;
+                            
+                            conditionRegex.lastIndex = 0; 
+
+                            while ((lineTempMatch = conditionRegex.exec(lineWhereClause)) !== null) {
+                                const colName = lineTempMatch[1].trim();
+                                const colValue = lineTempMatch[2].trim();
+                                
+                                lineRowObj[colName] = colValue;
+                                if (!detectedColumns.includes(colName)) {
+                                    detectedColumns.push(colName);
+                                }
+                            }
+                            if (Object.keys(lineRowObj).length > 0) {
+                                this.parsedRows.push(lineRowObj);
+                            }
+                         }
+                    });
+
+                    // Update kolom yang tersedia di filter hanya dari klausa WHERE
+                    this.columns = detectedColumns;
+                },
+
+                resetParseState() {
+                    this.tableName = '';
+                    this.columns = [];
+                    this.parsedRows = [];
+                    this.inputType = 'NONE';
+                },
+                
                 clearAll() {
                     this.inputSql = '';
                     this.columns = [];
@@ -270,11 +341,12 @@
                     this.selectedCols = [];
                     this.tableName = '';
                     this.splitQueryByValue = false;
+                    this.inputType = 'NONE';
                 },
                 copyToClipboard() {
                     navigator.clipboard.writeText(this.generatedQuery).then(() => {
                         this.copyText = 'Copied!';
-                        setTimeout(() => this.copyText = 'Copy Query', 2000);
+                        setTimeout(() => this.copyText = 'Copy', 2000);
                     });
                 }
             }
